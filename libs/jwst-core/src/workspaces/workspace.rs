@@ -1,6 +1,6 @@
 use std::sync::{Arc, RwLock};
 
-use jwst_codec::{Awareness, Doc, History, HistoryOptions, Map};
+use jwst_codec::{Array, Awareness, Doc, History, HistoryOptions, Map};
 use serde::{ser::SerializeMap, Serialize, Serializer};
 
 use super::*;
@@ -83,6 +83,21 @@ impl Workspace {
 
     pub fn history(&self, options: HistoryOptions) -> Vec<History> {
         self.doc.history().parse_store(options)
+    }
+
+    /// Get or create a named y.map in the underlying doc
+    pub fn get_or_create_map<S: AsRef<str>>(&self, name: S) -> JwstResult<Map> {
+        Ok(self.doc.get_or_create_map(name)?)
+    }
+
+    /// Get or create a named y.array in the underlying doc
+    pub fn get_or_create_array<S: AsRef<str>>(&self, name: S) -> JwstResult<Array> {
+        Ok(self.doc.get_or_create_array(name)?)
+    }
+
+    /// List all root-level type names in the doc
+    pub fn doc_keys(&self) -> Vec<String> {
+        self.doc.keys()
     }
 }
 
