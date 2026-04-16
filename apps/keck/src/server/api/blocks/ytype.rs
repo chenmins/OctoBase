@@ -332,7 +332,13 @@ pub async fn modify_array(
     if let Ok(ws) = context.get_workspace(&workspace).await {
         match ws.get_or_create_array(&name) {
             Ok(mut array) => {
-                let action = payload.get("action").and_then(|v| v.as_str()).unwrap_or("push");
+                let action = match payload.get("action").and_then(|v| v.as_str()) {
+                    Some(a) => a,
+                    None => {
+                        return (StatusCode::BAD_REQUEST, "Missing \"action\" field (\"push\" or \"insert\")")
+                            .into_response();
+                    }
+                };
 
                 let value = match payload.get("value") {
                     Some(v) => json_to_any(v.clone()),
@@ -349,7 +355,13 @@ pub async fn modify_array(
                         }
                     }
                     "insert" => {
-                        let index = payload.get("index").and_then(|v| v.as_u64()).unwrap_or(0);
+                        let index = match payload.get("index").and_then(|v| v.as_u64()) {
+                            Some(i) => i,
+                            None => {
+                                return (StatusCode::BAD_REQUEST, "Missing \"index\" field for insert action")
+                                    .into_response();
+                            }
+                        };
                         if let Err(e) = array.insert(index, value) {
                             error!("failed to insert into array: {:?}", e);
                             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
