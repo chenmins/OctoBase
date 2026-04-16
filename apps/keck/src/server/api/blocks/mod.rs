@@ -4,6 +4,7 @@ pub mod history;
 pub mod schema;
 pub mod subscribe;
 pub mod workspace;
+pub mod ytype;
 
 pub use history::BlockHistory;
 
@@ -43,6 +44,25 @@ fn workspace_apis(router: Router) -> Router {
         )
         .route("/block/:workspace/flavour/:flavour", get(block::get_block_by_flavour))
         .route("/block/:workspace/blocks", get(workspace::get_workspace_block))
+        // ytype: map apis
+        .route("/block/:workspace/map/:name", get(ytype::get_map).post(ytype::set_map))
+        .route(
+            "/block/:workspace/map/:name/:key",
+            get(ytype::get_map_key).delete(ytype::delete_map_key),
+        )
+        // ytype: array apis
+        .route(
+            "/block/:workspace/array/:name",
+            get(ytype::get_array).post(ytype::modify_array),
+        )
+        .route(
+            "/block/:workspace/array/:name/:index",
+            get(ytype::get_array_element).delete(ytype::delete_array_element),
+        )
+        // ytype: doc keys
+        .route("/block/:workspace/doc/keys", get(ytype::get_doc_keys))
+        // ytype: SSE subscription
+        .route("/block/:workspace/subscribe/sse", get(ytype::subscribe_sse))
         // .route("/search/:workspace", get(workspace::workspace_search))
         // .route(
         //     "/search/:workspace/index",

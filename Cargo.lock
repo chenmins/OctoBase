@@ -2556,6 +2556,7 @@ dependencies = [
  "thiserror",
  "time",
  "tokio",
+ "tokio-stream",
  "tower",
  "tower-http",
  "utoipa",

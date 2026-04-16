@@ -9,6 +9,7 @@ license = "AGPL-3.0-only"
 
 [features]
 large_refs = ["jwst-codec/large_refs"]
+serde_json = ["jwst-codec/serde_json"]
 
 [dependencies]
 base64 = "0.21.4"

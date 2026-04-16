@@ -42,6 +42,7 @@ tokio = { version = "=1.28.0", features = [
   "rt-multi-thread",
   "signal",
 ] }
+tokio-stream = "0.1.14"
 utoipa = { version = "3.5.0", features = ["axum_extras"], optional = true }
 utoipa-swagger-ui = { version = "3.1.5", optional = true }
 libc = "0.2.147"
@@ -59,7 +60,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 
-jwst-core = { workspace = true, features = ["large_refs"] }
+jwst-core = { workspace = true, features = ["large_refs", "serde_json"] }
 jwst-logger = { workspace = true }
 jwst-rpc = { workspace = true }
 jwst-storage = { workspace = true }
