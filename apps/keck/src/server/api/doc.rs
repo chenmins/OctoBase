@@ -4,7 +4,7 @@ use utoipa_swagger_ui::{serve, Config, Url};
 
 use super::{
     blobs,
-    blocks::{block, clients, history, schema, subscribe, workspace},
+    blocks::{block, clients, history, schema, subscribe, workspace, ytype},
     *,
 };
 
@@ -36,6 +36,20 @@ use super::{
         blobs::get_blob,
         blobs::set_blob,
         blobs::delete_blob,
+        // ytype map endpoints
+        ytype::get_map,
+        ytype::get_map_key,
+        ytype::set_map,
+        ytype::delete_map_key,
+        // ytype array endpoints
+        ytype::get_array,
+        ytype::get_array_element,
+        ytype::modify_array,
+        ytype::delete_array_element,
+        // ytype doc endpoints
+        ytype::get_doc_keys,
+        // ytype SSE subscription
+        ytype::subscribe_sse,
     ),
     components(
         schemas(
@@ -46,13 +60,15 @@ use super::{
     ),
     tags(
         (name = "Workspace", description = "Read and write remote workspace"),
-        (name = "Blocks", description = "Read and write remote blocks")
+        (name = "Blocks", description = "Read and write remote blocks"),
+        (name = "YType", description = "YType API endpoints for manipulating Y.js-compatible CRDT data structures (Maps, Arrays) and subscribing to real-time changes via SSE")
     )
 )]
 struct ApiDoc;
 
 const README: &str = include_str!("../../../../homepage/pages/docs/introduction.md");
 const DISTINCTIVE_FEATURES: &str = include_str!("../../../../homepage/pages/docs/overview/distinctive_features.md");
+const API_DOCS: &str = include_str!("../../../API.md");
 
 #[cfg(feature = "schema")]
 async fn serve_swagger_ui(
@@ -71,7 +87,7 @@ pub fn doc_apis(router: Router) -> Router {
     #[cfg(feature = "schema")]
     {
         let mut openapi = ApiDoc::openapi();
-        openapi.info.description = Some([README, DISTINCTIVE_FEATURES].join("\n"));
+        openapi.info.description = Some([README, DISTINCTIVE_FEATURES, API_DOCS].join("\n"));
 
         let name = "jwst";
         if cfg!(debug_assertions) || std::env::var("JWST_DEV").is_ok() {
