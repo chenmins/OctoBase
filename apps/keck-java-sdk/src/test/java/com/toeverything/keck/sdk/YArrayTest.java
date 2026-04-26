@@ -203,4 +203,93 @@ public class YArrayTest {
 
         assertEquals(0, yArray.size());
     }
+
+    @Test
+    public void testToStringWithNestedObjects() throws Exception {
+        // Simulate the real-world scenario: array containing a JSON object
+        String jsonBody = "[{\"contentFlag\":\"0\",\"type\":\"0\",\"rlName\":\"Speaker1\"}]";
+        server.enqueue(new MockResponse()
+                .setBody(jsonBody)
+                .setHeader("Content-Type", "application/json"));
+
+        String result = yArray.toString();
+        // Should contain the nested map representation, not [null]
+        assertFalse("[null]".equals(result));
+        assertTrue(result.contains("contentFlag"));
+        assertTrue(result.contains("Speaker1"));
+
+        // Verify only ONE GET request was made (fetchAll), not N+1
+        assertEquals(1, server.getRequestCount());
+        RecordedRequest request = server.takeRequest();
+        assertEquals("GET", request.getMethod());
+        assertEquals("/api/block/test-ws/array/tags", request.getPath());
+    }
+
+    @Test
+    public void testToStringWithPrimitives() throws Exception {
+        server.enqueue(new MockResponse()
+                .setBody("[\"tag1\",\"tag2\"]")
+                .setHeader("Content-Type", "application/json"));
+
+        String result = yArray.toString();
+        assertEquals("[tag1, tag2]", result);
+    }
+
+    @Test
+    public void testToStringEmpty() throws Exception {
+        server.enqueue(new MockResponse()
+                .setBody("[]")
+                .setHeader("Content-Type", "application/json"));
+
+        assertEquals("[]", yArray.toString());
+    }
+
+    @Test
+    public void testIteratorUsesSnapshot() throws Exception {
+        // iterator() should use fetchAll() - one HTTP call for all elements
+        server.enqueue(new MockResponse()
+                .setBody("[\"a\",\"b\",\"c\"]")
+                .setHeader("Content-Type", "application/json"));
+
+        java.util.Iterator<Object> it = yArray.iterator();
+        assertTrue(it.hasNext());
+        assertEquals("a", it.next());
+        assertEquals("b", it.next());
+        assertEquals("c", it.next());
+        assertFalse(it.hasNext());
+
+        // Only ONE request should have been made
+        assertEquals(1, server.getRequestCount());
+    }
+
+    @Test
+    public void testNestedObjectConvertedToMap() throws Exception {
+        server.enqueue(new MockResponse()
+                .setBody("{\"name\":\"test\",\"count\":42,\"active\":true}")
+                .setHeader("Content-Type", "application/json"));
+
+        Object value = yArray.get(0);
+        assertTrue("Expected Map but got " + value.getClass().getName(),
+                value instanceof java.util.Map);
+        @SuppressWarnings("unchecked")
+        java.util.Map<String, Object> map = (java.util.Map<String, Object>) value;
+        assertEquals("test", map.get("name"));
+        assertEquals(42, map.get("count"));
+        assertEquals(true, map.get("active"));
+    }
+
+    @Test
+    public void testNestedArrayConvertedToList() throws Exception {
+        server.enqueue(new MockResponse()
+                .setBody("[1,2,3]")
+                .setHeader("Content-Type", "application/json"));
+
+        Object value = yArray.get(0);
+        assertTrue("Expected List but got " + value.getClass().getName(),
+                value instanceof java.util.List);
+        @SuppressWarnings("unchecked")
+        java.util.List<Object> list = (java.util.List<Object>) value;
+        assertEquals(3, list.size());
+        assertEquals(1, list.get(0));
+    }
 }

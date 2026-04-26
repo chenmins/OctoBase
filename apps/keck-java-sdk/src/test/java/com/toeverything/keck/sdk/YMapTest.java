@@ -207,4 +207,51 @@ public class YMapTest {
 
         assertEquals(0, yMap.size());
     }
+
+    @Test
+    public void testNestedObjectConvertedToMap() throws Exception {
+        server.enqueue(new MockResponse()
+                .setBody("{\"name\":\"test\",\"count\":42}")
+                .setHeader("Content-Type", "application/json"));
+
+        Object value = yMap.get("nested");
+        assertTrue("Expected Map but got " + value.getClass().getName(),
+                value instanceof java.util.Map);
+        @SuppressWarnings("unchecked")
+        java.util.Map<String, Object> nested = (java.util.Map<String, Object>) value;
+        assertEquals("test", nested.get("name"));
+        assertEquals(42, nested.get("count"));
+    }
+
+    @Test
+    public void testNestedArrayConvertedToList() throws Exception {
+        server.enqueue(new MockResponse()
+                .setBody("[1,2,3]")
+                .setHeader("Content-Type", "application/json"));
+
+        Object value = yMap.get("items");
+        assertTrue("Expected List but got " + value.getClass().getName(),
+                value instanceof java.util.List);
+        @SuppressWarnings("unchecked")
+        java.util.List<Object> list = (java.util.List<Object>) value;
+        assertEquals(3, list.size());
+    }
+
+    @Test
+    public void testToStringWithNestedValues() throws Exception {
+        server.enqueue(new MockResponse()
+                .setBody("{\"config\":{\"theme\":\"dark\"},\"tags\":[\"a\",\"b\"]}")
+                .setHeader("Content-Type", "application/json"));
+
+        Set<Map.Entry<String, Object>> entries = yMap.entrySet();
+        assertEquals(2, entries.size());
+        // Verify nested values are properly converted
+        for (Map.Entry<String, Object> entry : entries) {
+            if ("config".equals(entry.getKey())) {
+                assertTrue(entry.getValue() instanceof java.util.Map);
+            } else if ("tags".equals(entry.getKey())) {
+                assertTrue(entry.getValue() instanceof java.util.List);
+            }
+        }
+    }
 }

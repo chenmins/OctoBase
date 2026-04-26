@@ -6,6 +6,7 @@ import com.google.gson.JsonElement;
 import java.util.AbstractList;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -169,5 +170,27 @@ public class YArray extends AbstractList<Object> {
      */
     public void insert(int index, Object value) {
         add(index, value);
+    }
+
+    // ── Iteration & toString ─────────────────────────────────────────────
+
+    /**
+     * Returns an iterator over the elements, fetching all elements in a single
+     * HTTP call instead of making individual per-element requests.
+     */
+    @Override
+    public Iterator<Object> iterator() {
+        return fetchAll().iterator();
+    }
+
+    /**
+     * Returns a string representation of this array by fetching all elements
+     * in a single HTTP call. This avoids the N+1 request problem that would
+     * occur if the default {@link AbstractList#toString()} used individual
+     * {@link #get(int)} calls.
+     */
+    @Override
+    public String toString() {
+        return fetchAll().toString();
     }
 }

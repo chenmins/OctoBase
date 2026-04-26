@@ -1,16 +1,19 @@
 package com.toeverything.keck.sdk;
 
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 
 import java.util.AbstractMap;
 import java.util.AbstractSet;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Collections;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
@@ -190,6 +193,10 @@ public class YMap extends AbstractMap<String, Object> {
 
     /**
      * Convert a JsonElement to a Java-friendly object.
+     * <p>
+     * Primitives are converted to their Java equivalents (String, Boolean, Number).
+     * JSON objects are recursively converted to {@code Map<String, Object>}.
+     * JSON arrays are recursively converted to {@code List<Object>}.
      */
     static Object toJavaObject(JsonElement element) {
         if (element == null || element instanceof JsonNull) {
@@ -213,7 +220,23 @@ public class YMap extends AbstractMap<String, Object> {
                 return element.getAsString();
             }
         }
-        // For complex types (arrays, objects), return the JsonElement as-is
+        if (element.isJsonObject()) {
+            JsonObject obj = element.getAsJsonObject();
+            Map<String, Object> map = new LinkedHashMap<>();
+            for (Map.Entry<String, JsonElement> entry : obj.entrySet()) {
+                map.put(entry.getKey(), toJavaObject(entry.getValue()));
+            }
+            return map;
+        }
+        if (element.isJsonArray()) {
+            JsonArray arr = element.getAsJsonArray();
+            List<Object> list = new ArrayList<>(arr.size());
+            for (JsonElement el : arr) {
+                list.add(toJavaObject(el));
+            }
+            return list;
+        }
+        // Fallback: return the element as-is
         return element;
     }
 }
