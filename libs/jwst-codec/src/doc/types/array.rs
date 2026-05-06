@@ -4,16 +4,38 @@ impl_type!(Array);
 
 impl ListType for Array {}
 
-pub struct ArrayIter<'a>(ListIterator<'a>);
+pub struct ArrayIter<'a> {
+    inner: ListIterator<'a>,
+    /// Buffer for multi-element Content::Any items: (elements, current index)
+    current_any: Option<(Vec<Any>, usize)>,
+}
 
 impl Iterator for ArrayIter<'_> {
     type Item = Value;
 
     fn next(&mut self) -> Option<Self::Item> {
-        for item in self.0.by_ref() {
+        // First, drain any buffered Any elements from a multi-element Content::Any
+        if let Some((ref any_vec, ref mut idx)) = self.current_any {
+            let val = Value::Any(any_vec[*idx].clone());
+            *idx += 1;
+            if *idx >= any_vec.len() {
+                self.current_any = None;
+            }
+            return Some(val);
+        }
+
+        // Get next item from the underlying iterator
+        for item in self.inner.by_ref() {
             if let Some(item) = item.get() {
                 if item.countable() {
-                    return Some(Value::from(&item.content));
+                    match &item.content {
+                        Content::Any(any) if any.len() > 1 => {
+                            let val = Value::Any(any[0].clone());
+                            self.current_any = Some((any.clone(), 1));
+                            return Some(val);
+                        }
+                        _ => return Some(Value::from(&item.content)),
+                    }
                 }
             }
         }
@@ -48,7 +70,10 @@ impl Array {
     }
 
     pub fn iter(&self) -> ArrayIter {
-        ArrayIter(self.iter_item())
+        ArrayIter {
+            inner: self.iter_item(),
+            current_any: None,
+        }
     }
 
     pub fn push<V: Into<Value>>(&mut self, val: V) -> JwstCodecResult {
