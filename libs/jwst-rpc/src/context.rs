@@ -1,4 +1,11 @@
-use std::collections::HashMap;
+use std::{
+    collections::HashMap,
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        Arc,
+    },
+    time::{Duration, Instant},
+};
 
 use async_trait::async_trait;
 use chrono::Utc;
@@ -85,10 +92,15 @@ pub trait RpcContextImpl<'a> {
         tokio::spawn(async move {
             trace!("save update thread {id}-{identifier} started");
             let updates = Arc::new(Mutex::new(HashMap::<String, Vec<Vec<u8>>>::new()));
+            let needs_full_migrate = Arc::new(AtomicBool::new(false));
+            let lagged_messages = Arc::new(AtomicU64::new(0));
 
             let handler = {
                 let id = id.clone();
+                let save_identifier = identifier.clone();
                 let updates = updates.clone();
+                let needs_full_migrate = needs_full_migrate.clone();
+                let lagged_messages = lagged_messages.clone();
                 tokio::spawn(async move {
                     loop {
                         match broadcast.recv().await {
@@ -107,20 +119,23 @@ pub trait RpcContextImpl<'a> {
                                         };
                                     };
                                 }
-                                BroadcastType::CloseUser(user) if user == identifier => break,
+                                BroadcastType::CloseUser(user) if user == save_identifier => break,
                                 BroadcastType::CloseAll => break,
                                 _ => {}
                             },
                             Err(RecvError::Lagged(num)) => {
-                                debug!("save update thread {id}-{identifier} lagged: {num}");
+                                warn!("save update thread {id}-{save_identifier} lagged: {num}, stop saver to avoid partial persistence");
+                                lagged_messages.fetch_add(num, Ordering::AcqRel);
+                                needs_full_migrate.store(true, Ordering::Release);
+                                break;
                             }
                             Err(RecvError::Closed) => {
-                                debug!("save update thread {id}-{identifier} closed");
+                                debug!("save update thread {id}-{save_identifier} closed");
                                 break;
                             }
                         }
                     }
-                    trace!("save update thread {id}-{identifier} finished");
+                    trace!("save update thread {id}-{save_identifier} finished");
                 })
             };
 
@@ -139,6 +154,30 @@ pub trait RpcContextImpl<'a> {
                         }
                         last_synced.send(Utc::now().timestamp_millis()).await.unwrap();
                     } else if handler.is_finished() {
+                        if needs_full_migrate.load(Ordering::Acquire) {
+                            let lagged = lagged_messages.load(Ordering::Acquire);
+                            let started = Instant::now();
+                            warn!("save update thread {id}-{identifier} exited after lag={lagged}; start full workspace rebuild");
+                            match docs.get_or_create_workspace(id.clone()).await {
+                                Ok(workspace) => match workspace.sync_migration() {
+                                    Ok(update) => {
+                                        if let Err(e) = docs.delete_workspace(&id).await {
+                                            error!("full rebuild delete workspace {} failed: {:?}", id, e);
+                                        } else if let Err(e) = docs.flush_workspace(id.clone(), update).await {
+                                            error!("full rebuild flush workspace {} failed: {:?}", id, e);
+                                        } else {
+                                            info!("full rebuild workspace {} completed after lag={} in {}ms", id, lagged, started.elapsed().as_millis());
+                                        }
+                                    }
+                                    Err(e) => {
+                                        error!("full rebuild sync_migration {} failed after {}ms: {:?}", id, started.elapsed().as_millis(), e);
+                                    }
+                                },
+                                Err(e) => {
+                                    error!("full rebuild get workspace {} failed after {}ms: {:?}", id, started.elapsed().as_millis(), e);
+                                }
+                            }
+                        }
                         break;
                     }
                 }
@@ -178,6 +217,30 @@ pub trait RpcContextImpl<'a> {
                             debug!("apply_change: recv binary: {:?}", binary.len());
                             updates.push(binary);
                         } else {
+                            // remote closed: flush buffered updates before exit
+                            if !updates.is_empty() {
+                                debug!("flush {} updates for {id} before close", updates.len());
+
+                                let updates = std::mem::take(&mut updates);
+                                let message = {
+                                    let mut workspace = workspace.clone();
+                                    spawn_blocking(move || workspace.sync_messages(updates))
+                                        .await
+                                        .unwrap()
+                                };
+
+                                for reply in message {
+                                    trace!("send pipeline message by {identifier:?}: {}", reply.len());
+                                    if local_tx.send(Message::Binary(reply.clone())).await.is_err() {
+                                        break;
+                                    }
+                                }
+
+                                last_synced
+                                    .send(Utc::now().timestamp_millis())
+                                    .await
+                                    .unwrap();
+                            }
                             break;
                         }
                     },
