@@ -99,6 +99,18 @@ impl Workspace {
     pub fn doc_keys(&self) -> Vec<String> {
         self.doc.keys()
     }
+
+    /// Get the current state vector of the underlying doc.
+    /// This can be used to compute incremental updates after modifications.
+    pub fn get_state_vector(&self) -> jwst_codec::StateVector {
+        self.doc.get_state_vector()
+    }
+
+    /// Encode updates since a given state vector as a binary v1 update.
+    /// Returns the binary diff that can be applied to a doc at the given state.
+    pub fn encode_update_since(&self, sv: &jwst_codec::StateVector) -> JwstResult<Vec<u8>> {
+        Ok(self.doc.encode_state_as_update_v1(sv)?)
+    }
 }
 
 impl Serialize for Workspace {

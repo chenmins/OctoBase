@@ -71,11 +71,12 @@ pub async fn set_block(
 ) -> Response {
     let (ws_id, block_id) = params;
     info!("set_block: {}, {}", ws_id, block_id);
-    if let Ok(mut space) = context
-        .get_workspace(&ws_id)
-        .await
-        .and_then(|mut ws| Ok(ws.get_blocks()?))
-    {
+    if let Ok(mut ws) = context.get_workspace(&ws_id).await {
+        let mut space = match ws.get_blocks() {
+            Ok(space) => space,
+            Err(_) => return StatusCode::NOT_FOUND.into_response(),
+        };
+
         let flavour = if let Some(query_map) = query_param {
             query_map
                 .get("flavour")
@@ -83,6 +84,9 @@ pub async fn set_block(
         } else {
             String::from("text")
         };
+
+        // Capture state vector BEFORE any modifications (including block creation)
+        let sv_before = ws.get_state_vector();
 
         if let Ok(mut block) = space
             .create(&block_id, flavour)
@@ -105,6 +109,9 @@ pub async fn set_block(
                     }
                 }
             }
+
+            // Persist to database and broadcast to WebSocket clients
+            context.persist_and_broadcast(&ws, &sv_before).await;
 
             // response block content
             return Json(block).into_response();
