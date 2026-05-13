@@ -203,6 +203,7 @@ impl Context {
         };
 
         // Skip if update is empty (no actual changes)
+        // An empty v1 update is encoded as [0, 0] (zero structs, zero delete sets)
         if update.is_empty() || update == [0, 0] {
             return;
         }
@@ -221,7 +222,7 @@ impl Context {
         // 2. Broadcast to connected WebSocket clients via the broadcast channel
         let channels = self.channel.read().await;
         if let Some(broadcast_tx) = channels.get(&workspace_id) {
-            if let Ok(encoded) = encode_update_as_message(update.clone()) {
+            if let Ok(encoded) = encode_update_as_message(update) {
                 if broadcast_tx.send(BroadcastType::BroadcastContent(encoded)).is_err() {
                     debug!("no active WebSocket receivers for workspace {}", workspace_id);
                 }
