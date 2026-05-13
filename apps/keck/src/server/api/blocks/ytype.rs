@@ -154,6 +154,9 @@ pub async fn set_map(
         match ws.get_or_create_map(&name) {
             Ok(mut map) => {
                 if let Some(obj) = payload.as_object() {
+                    // Capture state vector BEFORE modifications
+                    let sv_before = ws.get_state_vector();
+
                     for (k, v) in obj.iter() {
                         let any = json_to_any(v.clone());
                         if let Err(e) = map.insert(k.clone(), any) {
@@ -161,6 +164,10 @@ pub async fn set_map(
                             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                         }
                     }
+
+                    // Persist to database and broadcast to WebSocket clients
+                    context.persist_and_broadcast(&ws, &sv_before).await;
+
                     Json(map).into_response()
                 } else {
                     (StatusCode::BAD_REQUEST, "Expected a JSON object").into_response()
@@ -201,7 +208,9 @@ pub async fn delete_map_key(
     if let Ok(ws) = context.get_workspace(&workspace).await {
         match ws.get_or_create_map(&name) {
             Ok(mut map) => {
+                let sv_before = ws.get_state_vector();
                 map.remove(&key);
+                context.persist_and_broadcast(&ws, &sv_before).await;
                 StatusCode::NO_CONTENT.into_response()
             }
             Err(e) => {
@@ -347,6 +356,9 @@ pub async fn modify_array(
                     }
                 };
 
+                // Capture state vector BEFORE modifications
+                let sv_before = ws.get_state_vector();
+
                 match action {
                     "push" => {
                         if let Err(e) = array.push(value) {
@@ -371,6 +383,9 @@ pub async fn modify_array(
                         return (StatusCode::BAD_REQUEST, format!("Unknown action: {action}")).into_response();
                     }
                 }
+
+                // Persist to database and broadcast to WebSocket clients
+                context.persist_and_broadcast(&ws, &sv_before).await;
 
                 Json(array).into_response()
             }
@@ -413,10 +428,12 @@ pub async fn delete_array_element(
     if let Ok(ws) = context.get_workspace(&workspace).await {
         match ws.get_or_create_array(&name) {
             Ok(mut array) => {
+                let sv_before = ws.get_state_vector();
                 if let Err(e) = array.remove(index, 1) {
                     error!("failed to remove from array: {:?}", e);
                     return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                 }
+                context.persist_and_broadcast(&ws, &sv_before).await;
                 StatusCode::NO_CONTENT.into_response()
             }
             Err(e) => {

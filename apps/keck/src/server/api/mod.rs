@@ -4,7 +4,7 @@ mod blobs;
 mod blocks;
 mod doc;
 
-use std::collections::{HashMap, hash_map::Entry};
+use std::collections::HashMap;
 
 use axum::Router;
 #[cfg(feature = "api")]
@@ -15,9 +15,11 @@ use axum::{
     routing::{delete, get, head, post},
 };
 use doc::doc_apis;
+use jwst_codec::{encode_update_as_message, StateVector};
+use jwst_core::{DocStorage, Workspace};
 use jwst_rpc::{BroadcastChannels, BroadcastType, RpcContextImpl};
 use jwst_storage::{BlobStorageType, JwstStorage, JwstStorageResult};
-use tokio::sync::{RwLock, broadcast, mpsc::Sender};
+use tokio::sync::RwLock;
 
 use super::{redis_sync::RedisSync, *};
 
@@ -180,6 +182,51 @@ impl Context {
 
     pub fn get_redis_sync(&self) -> Option<Arc<RedisSync>> {
         self.redis_sync.clone()
+    }
+
+    /// Persist workspace changes to the database and broadcast them to connected
+    /// WebSocket clients. This should be called after any REST API write operation
+    /// to ensure data is durable and propagated to collaboration sessions.
+    ///
+    /// `sv_before` is the state vector captured BEFORE the modifications were made.
+    pub async fn persist_and_broadcast(&self, workspace: &Workspace, sv_before: &StateVector) {
+        let workspace_id = workspace.id();
+        let doc_guid = workspace.doc_guid().to_string();
+
+        // Compute the update (diff between before and after modification)
+        let update = match workspace.encode_update_since(sv_before) {
+            Ok(update) => update,
+            Err(e) => {
+                error!("failed to encode workspace update for {}: {:?}", workspace_id, e);
+                return;
+            }
+        };
+
+        // Skip if update is empty (no actual changes)
+        if update.is_empty() || update == [0, 0] {
+            return;
+        }
+
+        // 1. Persist to database (this also sends to DocDBStorage's remote channel,
+        //    which handle_connector listens to via server_rx)
+        if let Err(e) = self
+            .storage
+            .docs()
+            .update_doc(workspace_id.clone(), doc_guid.clone(), &update)
+            .await
+        {
+            error!("failed to persist REST API update for {}: {:?}", workspace_id, e);
+        }
+
+        // 2. Broadcast to connected WebSocket clients via the broadcast channel
+        let channels = self.channel.read().await;
+        if let Some(broadcast_tx) = channels.get(&workspace_id) {
+            if let Ok(encoded) = encode_update_as_message(update.clone()) {
+                if broadcast_tx.send(BroadcastType::BroadcastContent(encoded)).is_err() {
+                    debug!("no active WebSocket receivers for workspace {}", workspace_id);
+                }
+            }
+        }
     }
 }
 
