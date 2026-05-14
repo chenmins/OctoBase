@@ -75,13 +75,14 @@ pub async fn subscribe(workspace: &Workspace, identifier: String, sender: Broadc
                         debug!("broadcast channel {workspace_id} has been closed",)
                     }
 
-                    if sender.send(BroadcastType::BroadcastContent(sendable_update.clone())).is_err() {
+                    let sendable_len = sendable_update.len();
+                    if sender.send(BroadcastType::BroadcastContent(sendable_update)).is_err() {
                         debug!("broadcast channel {workspace_id} has been closed",)
                     } else {
                         debug!(
                             "workspace {} broadcast content queued: {} bytes (subscribers={})",
                             workspace_id,
-                            sendable_update.len(),
+                            sendable_len,
                             sender.receiver_count()
                         );
                     }
