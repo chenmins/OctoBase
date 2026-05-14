@@ -1,5 +1,7 @@
 use std::{collections::hash_map::Iter, rc::Rc};
 
+use jwst_logger::debug;
+
 use super::*;
 use crate::{
     doc::{AsInner, Node, Parent, YTypeRef},
@@ -13,14 +15,31 @@ pub(crate) trait MapType: AsInner<Inner = YTypeRef> {
         if let Some((mut store, mut ty)) = self.as_inner().write() {
             let left = ty.map.get(&SmolStr::new(&key)).cloned();
 
+            // Diagnostic: log left item id and right neighbor for the map slot we're writing into.
+            // Useful when debugging cases where an HTTP set succeeds locally but a peer
+            // (e.g. y-websocket client) does not see the new value as the live one for `key`.
+            let left_dbg = left.as_ref().and_then(|l| l.get()).map(|li| {
+                let right_id = li.right.get().map(|ri| ri.id);
+                let deleted = li.deleted();
+                (li.id, right_id, deleted)
+            });
+            debug!(
+                "ymap._insert key={:?} left_item={:?} (id, right_id, deleted)",
+                key, left_dbg
+            );
+
             let item = store.create_item(
                 value.into().into(),
                 left.unwrap_or(Somr::none()),
                 Somr::none(),
                 Some(Parent::Type(self.as_inner().clone())),
-                Some(SmolStr::new(key)),
+                Some(SmolStr::new(key.clone())),
             );
             store.integrate(Node::Item(item), 0, Some(&mut ty))?;
+
+            // After integrate, log what `parent.map[key]` ended up pointing to and whether it's deleted.
+            let after = ty.map.get(&SmolStr::new(&key)).and_then(|n| n.get()).map(|i| (i.id, i.deleted()));
+            debug!("ymap._insert key={:?} AFTER integrate parent.map[key]={:?}", key, after);
         }
 
         Ok(())

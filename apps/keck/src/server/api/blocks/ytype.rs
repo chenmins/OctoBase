@@ -155,11 +155,24 @@ pub async fn set_map(
             Ok(mut map) => {
                 if let Some(obj) = payload.as_object() {
                     for (k, v) in obj.iter() {
+                        // Diagnostic: log the value of the key BEFORE we overwrite it.
+                        // When the same map key has had concurrent writes from multiple
+                        // yjs clients in the past, the in-memory CRDT may disagree with
+                        // a remote (y-websocket) peer about which item is "live" for the
+                        // key. Logging the previous value helps confirm whether the
+                        // server's view matches what the peer is expected to see.
+                        let before = map.get(k).map(|v| format!("{:?}", v));
+                        info!(
+                            "set_map[{}.{}] key={:?} previous_value={:?} new_value={}",
+                            workspace, name, k, before, v
+                        );
                         let any = json_to_any(v.clone());
                         if let Err(e) = map.insert(k.clone(), any) {
                             error!("failed to set map key {}: {:?}", k, e);
                             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
                         }
+                        let after = map.get(k).map(|v| format!("{:?}", v));
+                        info!("set_map[{}.{}] key={:?} after_local_set={:?}", workspace, name, k, after);
                     }
                     Json(map).into_response()
                 } else {

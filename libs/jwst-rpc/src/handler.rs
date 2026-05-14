@@ -109,6 +109,10 @@ pub async fn handle_connector(
                     BroadcastType::BroadcastContent(data) => {
                         let ts = Instant::now();
                         trace!("recv content update from broadcast: {:?}bytes", data.len());
+                        debug!(
+                            "ws->client[{identifier}] forwarding BroadcastContent: {} bytes",
+                            data.len()
+                        );
                         if tx.send(Message::Binary(data.clone())).await.is_err() {
                             // pipeline was closed
                             break 'sync;
