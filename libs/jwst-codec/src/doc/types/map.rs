@@ -327,4 +327,57 @@ mod tests {
             )
         });
     }
+
+    /// Two clients concurrently set the SAME map key while offline, then their
+    /// updates are merged into a third doc in BOTH possible orders. The merged
+    /// doc must pick the same winner regardless of merge order, and that winner
+    /// must be the one with the HIGHER client id (yjs's tie-break: lower client
+    /// id goes to the LEFT, so the higher one stays as the rightmost / live item).
+    ///
+    /// This is the regression test for
+    /// `apps/keck/doctor_prod_userName_wuyulong1.before_fix.bin`, where the
+    /// `visit_status.updateTime` slot had two concurrent items
+    /// (clients `1635070698` and `2258317784`, both with `origin_left = None`)
+    /// and the keck server's view of the live value diverged from the y-websocket
+    /// peer's view because `Node::head()` collapsed to an empty `Somr` and
+    /// promoted whichever item integrated last to `parent.map[key]`.
+    #[test]
+    fn test_map_concurrent_set_same_key_picks_higher_client() {
+        // Two distinct clients writing the same key while offline.
+        const CLIENT_LOW: u64 = 1_635_070_698;
+        const CLIENT_HIGH: u64 = 2_258_317_784;
+
+        let update_low = {
+            let doc = Doc::with_client(CLIENT_LOW);
+            let mut m = doc.get_or_create_map("m").unwrap();
+            m.insert("k".to_string(), "low_value").unwrap();
+            doc.encode_update_v1().unwrap()
+        };
+        let update_high = {
+            let doc = Doc::with_client(CLIENT_HIGH);
+            let mut m = doc.get_or_create_map("m").unwrap();
+            m.insert("k".to_string(), "high_value").unwrap();
+            doc.encode_update_v1().unwrap()
+        };
+
+        // Apply LOW then HIGH.
+        let merged_low_first = {
+            let mut doc = Doc::new();
+            doc.apply_update_from_binary_v1(update_low.clone()).unwrap();
+            doc.apply_update_from_binary_v1(update_high.clone()).unwrap();
+            doc.get_or_create_map("m").unwrap().get("k").unwrap()
+        };
+        // Apply HIGH then LOW.
+        let merged_high_first = {
+            let mut doc = Doc::new();
+            doc.apply_update_from_binary_v1(update_high).unwrap();
+            doc.apply_update_from_binary_v1(update_low).unwrap();
+            doc.get_or_create_map("m").unwrap().get("k").unwrap()
+        };
+
+        // Both merge orders must pick the SAME winner (deterministic CRDT),
+        // and that winner is the higher-client item ("high_value"), matching yjs.
+        assert_eq!(merged_low_first, Value::Any(Any::String("high_value".to_string())));
+        assert_eq!(merged_high_first, Value::Any(Any::String("high_value".to_string())));
+    }
 }

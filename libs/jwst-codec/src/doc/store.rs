@@ -540,7 +540,22 @@ impl DocStore {
                     } else {
                         // no left, parent.start = this
                         right = if let Some(parent_sub) = &this.parent_sub {
-                            parent.map.get(parent_sub).map(|n| Node::Item(n.clone()).head()).into()
+                            // For map types, `parent.map[key]` already points at the rightmost
+                            // (the "live") item in the slot's chain. yjs uses
+                            // `parent._map.get(parentSub)` directly here so a new item with
+                            // `left == None` is inserted to the LEFT of the current rightmost
+                            // (and is then auto-deleted below by the
+                            // `parent_sub.is_some() && right.is_some()` rule).
+                            //
+                            // The previous code walked `head()` (leftmost) instead, which
+                            // (a) is the wrong yjs semantics for maps and
+                            // (b) collapsed to `Somr::none()` because `Node::head()` walks
+                            //     one step past the leftmost into an empty `Somr`.
+                            // The combined effect was that every concurrent item with
+                            // `left == None` was promoted to `parent.map[key]` instead of
+                            // being shadowed, so the keck server's view of the live value
+                            // diverged from yjs whenever a slot had any concurrent history.
+                            parent.map.get(parent_sub).cloned().unwrap_or(Somr::none())
                         } else {
                             mem::replace(&mut parent.start, item_owner_ref.clone())
                         };
