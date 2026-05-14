@@ -154,7 +154,10 @@ impl Node {
         let mut cur = self.clone();
 
         while let Some(left) = cur.left() {
-            if left.is_item() {
+            // `left()` returns `Some(Node::Item(somr))` even when `somr` is empty
+            // (i.e. the current item has no real left neighbour). Stop in that case
+            // so we return the leftmost real item, not an empty Somr wrapper.
+            if left.is_item() && left.as_item().is_some() {
                 cur = left
             } else {
                 break;
@@ -169,7 +172,9 @@ impl Node {
         let mut cur = self.clone();
 
         while let Some(right) = cur.right() {
-            if right.is_item() {
+            // Mirror of `head()`: stop at the rightmost real item rather than walking
+            // into an empty Somr wrapper.
+            if right.is_item() && right.as_item().is_some() {
                 cur = right
             } else {
                 break;

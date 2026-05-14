@@ -53,6 +53,17 @@ pub async fn subscribe(workspace: &Workspace, identifier: String, sender: Broadc
                 history.len()
             );
 
+            // Diagnostic: log every history entry so we can correlate which Y types/keys
+            // were touched in this update. This is essential when investigating cases
+            // where an HTTP set succeeds locally but a y-websocket peer does not see
+            // the new value as the live one for a given map key.
+            for h in history.iter() {
+                debug!(
+                    "workspace {} change history id={} parent={:?} action={:?} content={:?}",
+                    workspace_id, h.id, h.parent, h.action, h.content
+                );
+            }
+
             match encode_update_with_guid(update, workspace_id.clone())
                 .and_then(|update_with_guid| encode_update_as_message(update.to_vec()).map(|u| (update_with_guid, u)))
             {
@@ -64,8 +75,16 @@ pub async fn subscribe(workspace: &Workspace, identifier: String, sender: Broadc
                         debug!("broadcast channel {workspace_id} has been closed",)
                     }
 
+                    let sendable_len = sendable_update.len();
                     if sender.send(BroadcastType::BroadcastContent(sendable_update)).is_err() {
                         debug!("broadcast channel {workspace_id} has been closed",)
+                    } else {
+                        debug!(
+                            "workspace {} broadcast content queued: {} bytes (subscribers={})",
+                            workspace_id,
+                            sendable_len,
+                            sender.receiver_count()
+                        );
                     }
                 }
                 Err(e) => {

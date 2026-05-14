@@ -80,6 +80,8 @@ pub async fn init_workspace(
         .collect::<Vec<u8>>()
         .await;
 
+    info!("init_workspace[{}] received snapshot: {} bytes", workspace, data.len());
+
     if has_error {
         StatusCode::INTERNAL_SERVER_ERROR.into_response()
     } else if let Err(e) = context.init_workspace(&workspace, data).await {
@@ -89,6 +91,18 @@ pub async fn init_workspace(
         warn!("failed to init workspace: {}", e.to_string());
         StatusCode::INTERNAL_SERVER_ERROR.into_response()
     } else {
+        // Diagnostic: dump the post-import root maps so we can compare what the
+        // server thinks the live values are vs. what a y-websocket peer reconstructs.
+        if let Ok(ws) = context.get_workspace(&workspace).await {
+            info!("init_workspace[{}] post-import doc keys = {:?}", workspace, ws.doc_keys());
+            for root in ws.doc_keys() {
+                if let Ok(map) = ws.get_or_create_map(&root) {
+                    if let Ok(s) = serde_json::to_string(&map) {
+                        info!("init_workspace[{}] root map {:?} = {}", workspace, root, s);
+                    }
+                }
+            }
+        }
         match context.export_workspace(workspace).await {
             Ok(data) => data.into_response(),
             Err(e) => {
