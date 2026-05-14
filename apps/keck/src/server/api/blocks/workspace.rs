@@ -65,6 +65,7 @@ pub async fn get_workspace(Extension(context): Extension<Arc<Context>>, Path(wor
 pub async fn init_workspace(
     Extension(context): Extension<Arc<Context>>,
     Path(workspace): Path<String>,
+    Query(query): Query<InitWorkspaceQuery>,
     body: BodyStream,
 ) -> Response {
     info!("init_workspace: {}", workspace);
@@ -82,12 +83,33 @@ pub async fn init_workspace(
 
     if has_error {
         StatusCode::INTERNAL_SERVER_ERROR.into_response()
-    } else if let Err(e) = context.init_workspace(&workspace, data).await {
+    } else if let Err(e) = context.init_workspace(&workspace, data.clone()).await {
         if matches!(e, JwstStorageError::WorkspaceExists(_)) {
-            return StatusCode::NOT_MODIFIED.into_response();
+            if !query.force {
+                return StatusCode::NOT_MODIFIED.into_response();
+            }
+
+            if context.storage.docs().delete_workspace(&workspace).await.is_err() {
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+            if let Err(e) = context.init_workspace(&workspace, data).await {
+                warn!("failed to force init workspace: {}", e.to_string());
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        } else {
+            warn!("failed to init workspace: {}", e.to_string());
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
-        warn!("failed to init workspace: {}", e.to_string());
-        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        match context.export_workspace(workspace).await {
+            Ok(data) => data.into_response(),
+            Err(e) => {
+                if matches!(e, JwstStorageError::WorkspaceNotFound(_)) {
+                    return StatusCode::NOT_FOUND.into_response();
+                }
+                warn!("failed to init workspace: {}", e.to_string());
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        }
     } else {
         match context.export_workspace(workspace).await {
             Ok(data) => data.into_response(),
@@ -100,6 +122,13 @@ pub async fn init_workspace(
             }
         }
     }
+}
+
+#[derive(Deserialize, IntoParams, Default)]
+pub struct InitWorkspaceQuery {
+    /// Replace existing workspace when true.
+    #[serde(default)]
+    force: bool,
 }
 
 /// Export a `Workspace` by id

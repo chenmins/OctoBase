@@ -6,6 +6,24 @@
 - Some `Y.Map` keys never appear on other clients.
 - Deleting the corresponding row from `docs` table, closing all clients, and restarting Keck makes sync normal again.
 
+## Additional symptom: `updateTime` appears unchanged on websocket, while `updateTime1` works
+
+If REST shows `/api/block/{workspace}/map/visit_status` updated but websocket-side code still does not observe
+`updateTime = "123"`, check the following first:
+
+1. **Workspace import actually happened**
+   - `POST /api/block/{workspace}/init` returns **304** when workspace already exists, so the uploaded snapshot is not applied.
+   - Re-import with overwrite semantics (delete and re-init), or use `?force=true` if your server supports it.
+
+2. **No-op write on Yjs key**
+   - Yjs does not emit a meaningful map change when writing the same value again.
+   - If `updateTime` is already `"123"` in the current doc state, setting it to `"123"` again can look like “REST success” but no websocket delta.
+   - Writing a new key (`updateTime1`) or a different value usually produces an event immediately.
+
+3. **Concurrent writers overwrite `updateTime`**
+   - In this snapshot, `visit_status.updateTime` is frequently updated (timestamp-like value).
+   - Another connected client/service may overwrite `"123"` quickly after your write; websocket may only show the final value.
+
 ## Likely root causes in current code
 
 ### 1) Broadcast channel lag can drop updates without state repair
