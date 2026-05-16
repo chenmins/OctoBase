@@ -40,24 +40,25 @@ pub async fn upgrade_handler(
     // can be compared with what the REST `get_map`/`get_map_key` calls see.
     if let Ok(ws_inst) = context.get_workspace(&workspace).await {
         let root_keys = ws_inst.doc_keys();
-        let has_visit_status = root_keys.iter().any(|k| k == "visit_status");
-        let mut visit_status_summary = String::from("(absent at root)");
-        if has_visit_status {
-            if let Ok(map) = ws_inst.get_or_create_map("visit_status") {
+        let mut root_summary: Vec<String> = Vec::new();
+        for key in &root_keys {
+            if let Ok(map) = ws_inst.get_map(key) {
                 let keys: Vec<String> = map.keys().map(|s| s.to_string()).collect();
-                visit_status_summary = format!("(root y-map, len={}, keys={:?})", map.len(), keys);
+                root_summary.push(format!("{}(map,len={},keys={:?})", key, map.len(), keys));
+            } else {
+                root_summary.push(format!("{}(non-map or other type)", key));
             }
         }
         info!(
             "ws upgrade_handler[diag]: workspace={} identifier={} doc_guid={} client_id={} \
-             root_keys(count={})={:?} visit_status={}",
+             root_keys(count={})={:?} root_detail=[{}]",
             workspace,
             identifier,
             ws_inst.doc_guid(),
             ws_inst.client_id(),
             root_keys.len(),
             root_keys,
-            visit_status_summary
+            root_summary.join(", ")
         );
     } else {
         warn!(

@@ -144,29 +144,31 @@ pub async fn init_workspace(
 }
 
 /// Diagnostic helper: after an import, dump the doc-side shape of the workspace
-/// (doc guid, root y-types, and the shape of a `visit_status` root y-map if any).
+/// (doc guid, root y-types and their sizes).
 /// This is used to debug REST GET vs y-websocket divergence on imported snapshots.
 async fn log_post_init_workspace_shape(context: &Context, workspace: &str) {
     match context.get_workspace(workspace).await {
         Ok(ws) => {
             let root_keys = ws.doc_keys();
-            let has_visit_status = root_keys.iter().any(|k| k == "visit_status");
-            let mut visit_status_summary = String::from("(absent at root)");
-            if has_visit_status {
-                if let Ok(map) = ws.get_or_create_map("visit_status") {
+            // For each root key, try to read its length without creating new types
+            let mut root_summary: Vec<String> = Vec::new();
+            for key in &root_keys {
+                if let Ok(map) = ws.get_map(key) {
                     let keys: Vec<String> = map.keys().map(|s| s.to_string()).collect();
-                    visit_status_summary = format!("(root y-map, len={}, keys={:?})", map.len(), keys);
+                    root_summary.push(format!("{}(map,len={},keys={:?})", key, map.len(), keys));
+                } else {
+                    root_summary.push(format!("{}(non-map or other type)", key));
                 }
             }
             info!(
                 "init_workspace[diag]: post-import workspace={} doc_guid={} client_id={} \
-                 root_keys(count={})={:?} visit_status={}",
+                 root_keys(count={})={:?} root_detail=[{}]",
                 workspace,
                 ws.doc_guid(),
                 ws.client_id(),
                 root_keys.len(),
                 root_keys,
-                visit_status_summary
+                root_summary.join(", ")
             );
         }
         Err(e) => {

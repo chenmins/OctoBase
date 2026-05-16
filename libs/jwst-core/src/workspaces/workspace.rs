@@ -90,6 +90,11 @@ impl Workspace {
         Ok(self.doc.get_or_create_map(name)?)
     }
 
+    /// Get an existing named y.map (read-only, does NOT create if absent).
+    pub fn get_map(&self, name: &str) -> JwstResult<Map> {
+        Ok(self.doc.get_map(name)?)
+    }
+
     /// Get or create a named y.array in the underlying doc
     pub fn get_or_create_array<S: AsRef<str>>(&self, name: S) -> JwstResult<Array> {
         Ok(self.doc.get_or_create_array(name)?)

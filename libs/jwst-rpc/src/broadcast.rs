@@ -54,12 +54,10 @@ pub async fn subscribe(workspace: &Workspace, identifier: String, sender: Broadc
             );
 
             // ── diagnostic: dump root y-type names touched by this update ──
-            // This is helpful when chasing REST GET vs y-websocket divergence:
-            // if e.g. `visit_status` is observed by the y-websocket client but
-            // never appears here as a touched root, then the data actually lives
-            // under a nested parent (e.g. inside a `space:*` map) and the REST
-            // `/api/block/{ws}/map/visit_status` call will see a *different*
-            // (freshly created, empty) root y-map.
+            // This helps chase REST GET vs y-websocket divergence: if a key
+            // never appears in touched_roots but does appear as a nested
+            // field_name, the data lives under a different parent and the REST
+            // `/api/block/{ws}/map/{key}` endpoint will correctly return 404.
             if !history.is_empty() {
                 let mut touched_roots: Vec<String> = history
                     .iter()
@@ -67,27 +65,21 @@ pub async fn subscribe(workspace: &Workspace, identifier: String, sender: Broadc
                     .collect();
                 touched_roots.sort();
                 touched_roots.dedup();
-                let touches_visit_status = touched_roots.iter().any(|r| r == "visit_status");
+
+                let mut nested_fields: Vec<String> = history
+                    .iter()
+                    .filter_map(|h| h.field_name.as_ref().map(|f| f.to_string()))
+                    .collect();
+                nested_fields.sort();
+                nested_fields.dedup();
+
                 debug!(
-                    "workspace {} update[diag]: touched_root_types={:?} touches_visit_status_root={} \
-                     histories={}",
+                    "workspace {} update[diag]: touched_roots={:?} nested_fields={:?} histories={}",
                     workspace_id,
                     touched_roots,
-                    touches_visit_status,
+                    nested_fields,
                     history.len()
                 );
-                if !touches_visit_status
-                    && history
-                        .iter()
-                        .any(|h| h.field_name.as_deref() == Some("visit_status"))
-                {
-                    debug!(
-                        "workspace {} update[diag]: 'visit_status' appears as a FIELD NAME but \
-                         not at root — it lives nested under: {:?}. REST `/map/visit_status` will \
-                         NOT see these updates.",
-                        workspace_id, touched_roots
-                    );
-                }
             }
 
             match encode_update_with_guid(update, workspace_id.clone())
