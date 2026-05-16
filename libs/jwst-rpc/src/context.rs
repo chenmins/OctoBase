@@ -212,9 +212,10 @@ pub trait RpcContextImpl<'a> {
                         if let Some(binary) = binary {
                             if binary == [0, 2, 2, 0, 0] || binary == [1, 1, 0] {
                                 // skip empty update
+                                trace!("apply_change: {id}-{identifier} skip empty sync probe ({}B)", binary.len());
                                 continue;
                             }
-                            debug!("apply_change: recv binary: {:?}", binary.len());
+                            debug!("apply_change: {id}-{identifier} recv binary: {} bytes (buffered={})", binary.len(), updates.len() + 1);
                             updates.push(binary);
                         } else {
                             // remote closed: flush buffered updates before exit
