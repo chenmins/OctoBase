@@ -29,14 +29,33 @@ pub async fn upgrade_handler(
     ws: WebSocketUpgrade,
 ) -> Response {
     let identifier = nanoid!();
+    info!("ws upgrade: workspace={} identifier={}", workspace, identifier);
     if let Err(e) = context.create_workspace(workspace.clone()).await {
         error!("create workspace failed: {:?}", e);
+    } else if let Ok(w) = context.get_workspace(&workspace).await {
+        // Diagnostic: when a y-websocket client connects, dump what the server
+        // currently believes the workspace looks like. If a key is visible
+        // through REST but missing from y-websocket peers, the easiest place
+        // to spot it is in this log line and the matching `get_map` log on
+        // the REST side.
+        let keys = w.doc_keys();
+        info!(
+            "ws upgrade: workspace={} identifier={} root_keys={:?} doc_guid={}",
+            workspace,
+            identifier,
+            keys,
+            w.doc_guid()
+        );
     }
     ws.protocols(["AFFiNE"]).on_upgrade(move |socket| {
+        let ws_id = workspace.clone();
+        let id = identifier.clone();
         handle_connector(context.clone(), workspace.clone(), identifier, move || {
             axum_socket_connector(socket, &workspace)
         })
-        .map(|_| ())
+        .map(move |_| {
+            info!("ws closed: workspace={} identifier={}", ws_id, id);
+        })
     })
 }
 

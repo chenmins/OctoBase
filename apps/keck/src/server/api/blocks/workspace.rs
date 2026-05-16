@@ -81,15 +81,28 @@ pub async fn init_workspace(
         .collect::<Vec<u8>>()
         .await;
 
+    info!(
+        "init_workspace: {} received body size={} bytes, force={}",
+        workspace,
+        data.len(),
+        query.force
+    );
+
     if has_error {
         StatusCode::INTERNAL_SERVER_ERROR.into_response()
     } else if let Err(e) = context.init_workspace(&workspace, data.clone()).await {
         if matches!(e, JwstStorageError::WorkspaceExists(_)) {
             if !query.force {
+                warn!(
+                    "init_workspace: {} already exists; returning 304 (use ?force=true to overwrite)",
+                    workspace
+                );
                 return StatusCode::NOT_MODIFIED.into_response();
             }
 
+            warn!("init_workspace: {} exists and force=true; deleting and re-importing", workspace);
             if context.storage.docs().delete_workspace(&workspace).await.is_err() {
+                error!("init_workspace: {} force delete failed", workspace);
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
             if let Err(e) = context.init_workspace(&workspace, data).await {
@@ -100,6 +113,11 @@ pub async fn init_workspace(
             warn!("failed to init workspace: {}", e.to_string());
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
+        // Diagnostic: log what the workspace actually looks like right after
+        // import — this is the canonical place to see whether the imported
+        // binary carried nested CRDT types that may not survive a round-trip
+        // through standard yjs clients.
+        log_workspace_shape(&context, &workspace, "post-force-init").await;
         match context.export_workspace(workspace).await {
             Ok(data) => data.into_response(),
             Err(e) => {
@@ -111,6 +129,7 @@ pub async fn init_workspace(
             }
         }
     } else {
+        log_workspace_shape(&context, &workspace, "post-init").await;
         match context.export_workspace(workspace).await {
             Ok(data) => data.into_response(),
             Err(e) => {
@@ -121,6 +140,54 @@ pub async fn init_workspace(
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
         }
+    }
+}
+
+/// Emit a structured log of the workspace's root keys and the variant of each
+/// root. This is the smallest amount of information needed to diagnose REST vs
+/// y-websocket inconsistencies caused by nested CRDT types in imported snapshots.
+async fn log_workspace_shape(context: &Context, workspace: &str, stage: &str) {
+    match context.get_workspace(workspace).await {
+        Ok(ws) => {
+            let keys = ws.doc_keys();
+            info!("workspace_shape[{}]: {} root_keys={:?}", stage, workspace, keys);
+            for k in &keys {
+                if let Ok(m) = ws.get_or_create_map(k) {
+                    let entries: Vec<(String, &'static str)> = m
+                        .entries()
+                        .map(|(ek, ev)| {
+                            let variant: &'static str = match ev {
+                                jwst_core::Value::Any(_) => "Any",
+                                jwst_core::Value::Array(_) => "Y.Array",
+                                jwst_core::Value::Map(_) => "Y.Map",
+                                jwst_core::Value::Text(_) => "Y.Text",
+                                _ => "Other",
+                            };
+                            (ek.to_string(), variant)
+                        })
+                        .collect();
+                    let nested = entries
+                        .iter()
+                        .filter(|(_, v)| matches!(*v, "Y.Map" | "Y.Array" | "Y.Text"))
+                        .count();
+                    info!(
+                        "workspace_shape[{}]: {} root={} len={} entries={:?}",
+                        stage,
+                        workspace,
+                        k,
+                        m.len(),
+                        entries
+                    );
+                    if nested > 0 {
+                        warn!(
+                            "workspace_shape[{}]: {} root={} contains {} nested CRDT child(ren) — these will not be observable by standard yjs/y-websocket peers if the snapshot used a non-standard binary encoding",
+                            stage, workspace, k, nested
+                        );
+                    }
+                }
+            }
+        }
+        Err(e) => warn!("workspace_shape[{}]: {} could not be re-opened: {}", stage, workspace, e),
     }
 }
 
