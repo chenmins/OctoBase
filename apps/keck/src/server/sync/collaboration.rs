@@ -29,8 +29,41 @@ pub async fn upgrade_handler(
     ws: WebSocketUpgrade,
 ) -> Response {
     let identifier = nanoid!();
+    info!(
+        "ws upgrade_handler[diag]: workspace={} identifier={} (about to create/load workspace)",
+        workspace, identifier
+    );
     if let Err(e) = context.create_workspace(workspace.clone()).await {
         error!("create workspace failed: {:?}", e);
+    }
+    // log doc-side view that the websocket session will be working on, so it
+    // can be compared with what the REST `get_map`/`get_map_key` calls see.
+    if let Ok(ws_inst) = context.get_workspace(&workspace).await {
+        let root_keys = ws_inst.doc_keys();
+        let has_visit_status = root_keys.iter().any(|k| k == "visit_status");
+        let mut visit_status_summary = String::from("(absent at root)");
+        if has_visit_status {
+            if let Ok(map) = ws_inst.get_or_create_map("visit_status") {
+                let keys: Vec<String> = map.keys().map(|s| s.to_string()).collect();
+                visit_status_summary = format!("(root y-map, len={}, keys={:?})", map.len(), keys);
+            }
+        }
+        info!(
+            "ws upgrade_handler[diag]: workspace={} identifier={} doc_guid={} client_id={} \
+             root_keys(count={})={:?} visit_status={}",
+            workspace,
+            identifier,
+            ws_inst.doc_guid(),
+            ws_inst.client_id(),
+            root_keys.len(),
+            root_keys,
+            visit_status_summary
+        );
+    } else {
+        warn!(
+            "ws upgrade_handler[diag]: workspace={} identifier={} could not load workspace after create",
+            workspace, identifier
+        );
     }
     ws.protocols(["AFFiNE"]).on_upgrade(move |socket| {
         handle_connector(context.clone(), workspace.clone(), identifier, move || {

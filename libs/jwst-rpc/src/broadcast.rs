@@ -53,6 +53,43 @@ pub async fn subscribe(workspace: &Workspace, identifier: String, sender: Broadc
                 history.len()
             );
 
+            // ── diagnostic: dump root y-type names touched by this update ──
+            // This is helpful when chasing REST GET vs y-websocket divergence:
+            // if e.g. `visit_status` is observed by the y-websocket client but
+            // never appears here as a touched root, then the data actually lives
+            // under a nested parent (e.g. inside a `space:*` map) and the REST
+            // `/api/block/{ws}/map/visit_status` call will see a *different*
+            // (freshly created, empty) root y-map.
+            if !history.is_empty() {
+                let mut touched_roots: Vec<String> = history
+                    .iter()
+                    .filter_map(|h| h.parent.first().map(|p| p.to_string()))
+                    .collect();
+                touched_roots.sort();
+                touched_roots.dedup();
+                let touches_visit_status = touched_roots.iter().any(|r| r == "visit_status");
+                debug!(
+                    "workspace {} update[diag]: touched_root_types={:?} touches_visit_status_root={} \
+                     histories={}",
+                    workspace_id,
+                    touched_roots,
+                    touches_visit_status,
+                    history.len()
+                );
+                if !touches_visit_status
+                    && history
+                        .iter()
+                        .any(|h| h.field_name.as_deref() == Some("visit_status"))
+                {
+                    debug!(
+                        "workspace {} update[diag]: 'visit_status' appears as a FIELD NAME but \
+                         not at root — it lives nested under: {:?}. REST `/map/visit_status` will \
+                         NOT see these updates.",
+                        workspace_id, touched_roots
+                    );
+                }
+            }
+
             match encode_update_with_guid(update, workspace_id.clone())
                 .and_then(|update_with_guid| encode_update_as_message(update.to_vec()).map(|u| (update_with_guid, u)))
             {

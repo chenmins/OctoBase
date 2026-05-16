@@ -63,14 +63,46 @@ pub async fn get_map(
 ) -> Response {
     info!("get_map: workspace={}, name={}", workspace, name);
     if let Ok(ws) = context.get_workspace(&workspace).await {
+        let doc_guid = ws.doc_guid().to_string();
+        let client_id = ws.client_id();
+        let root_keys = ws.doc_keys();
+        let map_was_present = root_keys.iter().any(|k| k == &name);
+        info!(
+            "get_map[diag]: workspace={} doc_guid={} client_id={} root_keys(count={})={:?} requested_map={} map_present_at_root={}",
+            workspace,
+            doc_guid,
+            client_id,
+            root_keys.len(),
+            root_keys,
+            name,
+            map_was_present
+        );
         match ws.get_or_create_map(&name) {
-            Ok(map) => Json(map).into_response(),
+            Ok(map) => {
+                let len = map.len();
+                let keys: Vec<String> = map.keys().map(|s| s.to_string()).collect();
+                info!(
+                    "get_map[diag]: workspace={} map={} (root) len={} keys={:?}",
+                    workspace, name, len, keys
+                );
+                if !map_was_present {
+                    warn!(
+                        "get_map[diag]: workspace={} map={} was NOT a pre-existing root y-type \
+                         (just created an empty root map). If a client expects this key to live \
+                         under a different parent (e.g. nested inside a space), REST and \
+                         y-websocket views WILL diverge. Root keys actually present: {:?}",
+                        workspace, name, root_keys
+                    );
+                }
+                Json(map).into_response()
+            }
             Err(e) => {
                 error!("failed to get map: {:?}", e);
                 (StatusCode::NOT_FOUND, format!("Map({name:?}) not found")).into_response()
             }
         }
     } else {
+        warn!("get_map[diag]: workspace={} NOT FOUND in storage", workspace);
         (StatusCode::NOT_FOUND, format!("Workspace({workspace:?}) not found")).into_response()
     }
 }
@@ -98,11 +130,54 @@ pub async fn get_map_key(
 ) -> Response {
     info!("get_map_key: workspace={}, name={}, key={}", workspace, name, key);
     if let Ok(ws) = context.get_workspace(&workspace).await {
+        let doc_guid = ws.doc_guid().to_string();
+        let client_id = ws.client_id();
+        let root_keys = ws.doc_keys();
+        let map_was_present = root_keys.iter().any(|k| k == &name);
+        info!(
+            "get_map_key[diag]: workspace={} doc_guid={} client_id={} root_keys(count={})={:?} \
+             requested_map={} requested_key={} map_present_at_root={}",
+            workspace,
+            doc_guid,
+            client_id,
+            root_keys.len(),
+            root_keys,
+            name,
+            key,
+            map_was_present
+        );
         match ws.get_or_create_map(&name) {
             Ok(map) => {
+                let len = map.len();
+                let keys: Vec<String> = map.keys().map(|s| s.to_string()).collect();
+                info!(
+                    "get_map_key[diag]: workspace={} map={} len={} keys={:?}",
+                    workspace, name, len, keys
+                );
                 if let Some(val) = map.get(&key) {
-                    Json(value_to_json(&val)).into_response()
+                    let json = value_to_json(&val);
+                    info!(
+                        "get_map_key[diag]: workspace={} map={} key={} value={}",
+                        workspace, name, key, json
+                    );
+                    Json(json).into_response()
                 } else {
+                    if !map_was_present {
+                        warn!(
+                            "get_map_key[diag]: workspace={} map={} was NOT a pre-existing root \
+                             y-type at the time of REST read (REST just created an empty root \
+                             map). y-websocket clients may be observing a *different* y-map \
+                             instance (e.g. nested under a `space:*` root). Root keys present: \
+                             {:?}",
+                            workspace, name, root_keys
+                        );
+                    } else {
+                        warn!(
+                            "get_map_key[diag]: workspace={} map={} exists (len={}) but key={} \
+                             is not set on the REST-side doc snapshot. Existing keys: {:?}",
+                            workspace, name, len, key, keys
+                        );
+                    }
                     (
                         StatusCode::NOT_FOUND,
                         format!("Key({key:?}) not found in map({name:?})"),
@@ -116,6 +191,7 @@ pub async fn get_map_key(
             }
         }
     } else {
+        warn!("get_map_key[diag]: workspace={} NOT FOUND in storage", workspace);
         (StatusCode::NOT_FOUND, format!("Workspace({workspace:?}) not found")).into_response()
     }
 }
