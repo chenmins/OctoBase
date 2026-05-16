@@ -81,14 +81,31 @@ pub async fn init_workspace(
         .collect::<Vec<u8>>()
         .await;
 
+    info!(
+        "init_workspace[diag]: workspace={} received {} bytes (force={})",
+        workspace,
+        data.len(),
+        query.force
+    );
+
     if has_error {
         StatusCode::INTERNAL_SERVER_ERROR.into_response()
     } else if let Err(e) = context.init_workspace(&workspace, data.clone()).await {
         if matches!(e, JwstStorageError::WorkspaceExists(_)) {
             if !query.force {
+                warn!(
+                    "init_workspace[diag]: workspace={} already exists and force=false; \
+                     uploaded snapshot was NOT applied (returning 304). To overwrite, retry \
+                     with ?force=true",
+                    workspace
+                );
                 return StatusCode::NOT_MODIFIED.into_response();
             }
 
+            info!(
+                "init_workspace[diag]: workspace={} exists, force=true -> deleting and re-initializing",
+                workspace
+            );
             if context.storage.docs().delete_workspace(&workspace).await.is_err() {
                 return StatusCode::INTERNAL_SERVER_ERROR.into_response();
             }
@@ -100,6 +117,7 @@ pub async fn init_workspace(
             warn!("failed to init workspace: {}", e.to_string());
             return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
+        log_post_init_workspace_shape(&context, &workspace).await;
         match context.export_workspace(workspace).await {
             Ok(data) => data.into_response(),
             Err(e) => {
@@ -111,6 +129,7 @@ pub async fn init_workspace(
             }
         }
     } else {
+        log_post_init_workspace_shape(&context, &workspace).await;
         match context.export_workspace(workspace).await {
             Ok(data) => data.into_response(),
             Err(e) => {
@@ -120,6 +139,43 @@ pub async fn init_workspace(
                 warn!("failed to init workspace: {}", e.to_string());
                 StatusCode::INTERNAL_SERVER_ERROR.into_response()
             }
+        }
+    }
+}
+
+/// Diagnostic helper: after an import, dump the doc-side shape of the workspace
+/// (doc guid, root y-types and their sizes).
+/// This is used to debug REST GET vs y-websocket divergence on imported snapshots.
+async fn log_post_init_workspace_shape(context: &Context, workspace: &str) {
+    match context.get_workspace(workspace).await {
+        Ok(ws) => {
+            let root_keys = ws.doc_keys();
+            // For each root key, try to read its length without creating new types
+            let mut root_summary: Vec<String> = Vec::new();
+            for key in &root_keys {
+                if let Ok(map) = ws.get_map(key) {
+                    let keys: Vec<String> = map.keys().map(|s| s.to_string()).collect();
+                    root_summary.push(format!("{}(map,len={},keys={:?})", key, map.len(), keys));
+                } else {
+                    root_summary.push(format!("{}(non-map or other type)", key));
+                }
+            }
+            info!(
+                "init_workspace[diag]: post-import workspace={} doc_guid={} client_id={} \
+                 root_keys(count={})={:?} root_detail=[{}]",
+                workspace,
+                ws.doc_guid(),
+                ws.client_id(),
+                root_keys.len(),
+                root_keys,
+                root_summary.join(", ")
+            );
+        }
+        Err(e) => {
+            warn!(
+                "init_workspace[diag]: workspace={} could not be re-read after import: {:?}",
+                workspace, e
+            );
         }
     }
 }

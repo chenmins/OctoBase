@@ -53,6 +53,35 @@ pub async fn subscribe(workspace: &Workspace, identifier: String, sender: Broadc
                 history.len()
             );
 
+            // ── diagnostic: dump root y-type names touched by this update ──
+            // This helps chase REST GET vs y-websocket divergence: if a key
+            // never appears in touched_roots but does appear as a nested
+            // field_name, the data lives under a different parent and the REST
+            // `/api/block/{ws}/map/{key}` endpoint will correctly return 404.
+            if !history.is_empty() {
+                let mut touched_roots: Vec<String> = history
+                    .iter()
+                    .filter_map(|h| h.parent.first().map(|p| p.to_string()))
+                    .collect();
+                touched_roots.sort();
+                touched_roots.dedup();
+
+                let mut nested_fields: Vec<String> = history
+                    .iter()
+                    .filter_map(|h| h.field_name.as_ref().map(|f| f.to_string()))
+                    .collect();
+                nested_fields.sort();
+                nested_fields.dedup();
+
+                debug!(
+                    "workspace {} update[diag]: touched_roots={:?} nested_fields={:?} histories={}",
+                    workspace_id,
+                    touched_roots,
+                    nested_fields,
+                    history.len()
+                );
+            }
+
             match encode_update_with_guid(update, workspace_id.clone())
                 .and_then(|update_with_guid| encode_update_as_message(update.to_vec()).map(|u| (update_with_guid, u)))
             {

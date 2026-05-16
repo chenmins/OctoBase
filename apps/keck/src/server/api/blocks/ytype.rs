@@ -63,11 +63,31 @@ pub async fn get_map(
 ) -> Response {
     info!("get_map: workspace={}, name={}", workspace, name);
     if let Ok(ws) = context.get_workspace(&workspace).await {
-        match ws.get_or_create_map(&name) {
-            Ok(map) => Json(map).into_response(),
-            Err(e) => {
-                error!("failed to get map: {:?}", e);
-                (StatusCode::NOT_FOUND, format!("Map({name:?}) not found")).into_response()
+        let root_keys = ws.doc_keys();
+        info!(
+            "get_map[diag]: workspace={} doc_guid={} client_id={} root_keys(count={})={:?} requested_map={}",
+            workspace, ws.doc_guid(), ws.client_id(), root_keys.len(), root_keys, name
+        );
+        // Use read-only get_map: if the root y-map doesn't exist, return 404
+        // instead of silently creating an empty one (which would diverge from
+        // what y-websocket clients observe).
+        match ws.get_map(&name) {
+            Ok(map) => {
+                let keys: Vec<String> = map.keys().map(|s| s.to_string()).collect();
+                info!(
+                    "get_map[diag]: workspace={} map={} len={} keys={:?}",
+                    workspace, name, map.len(), keys
+                );
+                Json(map).into_response()
+            }
+            Err(_) => {
+                warn!(
+                    "get_map[diag]: workspace={} map={} does NOT exist as a root y-type. \
+                     Root keys actually present: {:?}. If a y-websocket client observes \
+                     this key, it may live nested under a different parent.",
+                    workspace, name, root_keys
+                );
+                (StatusCode::NOT_FOUND, format!("Map({name:?}) not found at root")).into_response()
             }
         }
     } else {
@@ -98,21 +118,45 @@ pub async fn get_map_key(
 ) -> Response {
     info!("get_map_key: workspace={}, name={}, key={}", workspace, name, key);
     if let Ok(ws) = context.get_workspace(&workspace).await {
-        match ws.get_or_create_map(&name) {
+        let root_keys = ws.doc_keys();
+        info!(
+            "get_map_key[diag]: workspace={} doc_guid={} client_id={} root_keys(count={})={:?} \
+             requested_map={} requested_key={}",
+            workspace, ws.doc_guid(), ws.client_id(), root_keys.len(), root_keys, name, key
+        );
+        // Use read-only get_map: if the root y-map doesn't exist, return 404
+        // instead of silently creating an empty one.
+        match ws.get_map(&name) {
             Ok(map) => {
+                let keys: Vec<String> = map.keys().map(|s| s.to_string()).collect();
+                info!(
+                    "get_map_key[diag]: workspace={} map={} len={} keys={:?}",
+                    workspace, name, map.len(), keys
+                );
                 if let Some(val) = map.get(&key) {
-                    Json(value_to_json(&val)).into_response()
+                    let json = value_to_json(&val);
+                    info!(
+                        "get_map_key[diag]: workspace={} map={} key={} value={}",
+                        workspace, name, key, json
+                    );
+                    Json(json).into_response()
                 } else {
-                    (
-                        StatusCode::NOT_FOUND,
-                        format!("Key({key:?}) not found in map({name:?})"),
-                    )
-                        .into_response()
+                    warn!(
+                        "get_map_key[diag]: workspace={} map={} exists (len={}) but key={} \
+                         is not set. Existing keys: {:?}",
+                        workspace, name, map.len(), key, keys
+                    );
+                    (StatusCode::NOT_FOUND, format!("Key({key:?}) not found in map({name:?})")).into_response()
                 }
             }
-            Err(e) => {
-                error!("failed to get map: {:?}", e);
-                (StatusCode::NOT_FOUND, format!("Map({name:?}) not found")).into_response()
+            Err(_) => {
+                warn!(
+                    "get_map_key[diag]: workspace={} map={} does NOT exist as a root y-type. \
+                     Root keys actually present: {:?}. If a y-websocket client observes \
+                     this key, it may live nested under a different parent.",
+                    workspace, name, root_keys
+                );
+                (StatusCode::NOT_FOUND, format!("Map({name:?}) not found at root")).into_response()
             }
         }
     } else {
