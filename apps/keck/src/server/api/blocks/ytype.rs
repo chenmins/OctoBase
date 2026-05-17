@@ -182,7 +182,11 @@ pub async fn get_map_key(
                     let variant = value_variant(&val);
                     info!(
                         "get_map_key: workspace={}, name={}, key={}, value_variant={}, summary={}",
-                        workspace, name, key, variant, value_summary(&val)
+                        workspace,
+                        name,
+                        key,
+                        variant,
+                        value_summary(&val)
                     );
                     if matches!(val, Value::Map(_) | Value::Array(_) | Value::Text(_)) {
                         warn!(
@@ -291,7 +295,11 @@ pub async fn set_map(
                         let any_kind = any_variant(&any);
                         trace!(
                             "set_map: workspace={}, name={}, key={} <- {} ({})",
-                            workspace, name, k, any_kind, v
+                            workspace,
+                            name,
+                            k,
+                            any_kind,
+                            v
                         );
                         if let Err(e) = map.insert(k.clone(), any) {
                             error!("failed to set map key {}: {:?}", k, e);
@@ -426,7 +434,8 @@ pub async fn get_array_element(
     if let Ok(ws) = context.get_workspace(&workspace).await {
         match ws.get_or_create_array(&name) {
             Ok(array) => {
-                if let Some(val) = array.get(index) {
+                let val = usize::try_from(index).ok().and_then(|idx| array.iter().nth(idx));
+                if let Some(val) = val {
                     Json(value_to_json(&val)).into_response()
                 } else {
                     (
@@ -483,7 +492,10 @@ pub async fn modify_array(
                 let action = match payload.get("action").and_then(|v| v.as_str()) {
                     Some(a) => a,
                     None => {
-                        return (StatusCode::BAD_REQUEST, "Missing \"action\" field (\"push\" or \"insert\")")
+                        return (
+                            StatusCode::BAD_REQUEST,
+                            "Missing \"action\" field (\"push\" or \"insert\")",
+                        )
                             .into_response();
                     }
                 };
@@ -607,8 +619,10 @@ pub async fn get_doc_keys(Extension(context): Extension<Arc<Context>>, Path(work
         for k in &keys {
             match ws.get_or_create_map(k) {
                 Ok(m) => {
-                    let entries: Vec<(String, &'static str)> =
-                        m.entries().map(|(ek, ev)| (ek.to_string(), value_variant(&ev))).collect();
+                    let entries: Vec<(String, &'static str)> = m
+                        .entries()
+                        .map(|(ek, ev)| (ek.to_string(), value_variant(&ev)))
+                        .collect();
                     info!(
                         "get_doc_keys: workspace={}, root={} as Y.Map: len={}, entries={:?}",
                         workspace,

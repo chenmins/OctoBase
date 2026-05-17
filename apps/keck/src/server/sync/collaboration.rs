@@ -46,6 +46,36 @@ pub async fn upgrade_handler(
             keys,
             w.doc_guid()
         );
+        let normalized = normalize_workspace_for_yjs(&w, "ws-upgrade");
+        if let Some((update, entries)) = rebuild_plain_root_maps_for_yjs_update(&w, "ws-upgrade") {
+            let reason = format!("ws-upgrade identifier={}", identifier);
+            if context
+                .persist_plain_yjs_rebuild_once(&workspace, update, &reason)
+                .await
+            {
+                info!(
+                    "ws upgrade: workspace={} identifier={} ensured rebuilt plain root maps ({} entries) before sync",
+                    workspace, identifier, entries
+                );
+            } else {
+                warn!(
+                    "ws upgrade: workspace={} identifier={} failed to persist rebuilt plain root maps ({} entries) before sync",
+                    workspace, identifier, entries
+                );
+            }
+        } else if normalized > 0 {
+            if context.persist_workspace(&workspace, &w).await {
+                info!(
+                    "ws upgrade: workspace={} identifier={} persisted {} normalized nested entries before sync",
+                    workspace, identifier, normalized
+                );
+            } else {
+                warn!(
+                    "ws upgrade: workspace={} identifier={} failed to persist {} normalized nested entries before sync",
+                    workspace, identifier, normalized
+                );
+            }
+        }
     }
     ws.protocols(["AFFiNE"]).on_upgrade(move |socket| {
         let ws_id = workspace.clone();

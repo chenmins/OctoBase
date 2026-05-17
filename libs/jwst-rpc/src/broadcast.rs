@@ -59,15 +59,28 @@ pub async fn subscribe(workspace: &Workspace, identifier: String, sender: Broadc
             // that the standard yjs sync protocol will never carry those
             // children over y-websocket.
             if !history.is_empty() {
-                let mut by_action: std::collections::HashMap<String, usize> =
-                    std::collections::HashMap::new();
+                let mut by_action: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
                 for h in history.iter() {
                     *by_action.entry(h.action.to_string()).or_insert(0) += 1;
                 }
-                debug!(
-                    "workspace {} delta histories by action: {:?}",
-                    workspace_id, by_action
-                );
+                debug!("workspace {} delta histories by action: {:?}", workspace_id, by_action);
+                for h in history.iter().take(20) {
+                    debug!(
+                        "workspace {} delta history: action={} path={} field={:?} content={}",
+                        workspace_id,
+                        h.action.to_string(),
+                        h.parent.join("."),
+                        h.field_name.as_ref().map(|field| field.to_string()),
+                        h.content
+                    );
+                }
+                if history.len() > 20 {
+                    debug!(
+                        "workspace {} delta history: omitted {} additional entries",
+                        workspace_id,
+                        history.len() - 20
+                    );
+                }
             }
 
             match encode_update_with_guid(update, workspace_id.clone())
@@ -93,7 +106,10 @@ pub async fn subscribe(workspace: &Workspace, identifier: String, sender: Broadc
                     }
                 }
                 Err(e) => {
-                    warn!("workspace {} failed to encode update for broadcast: {}", workspace_id, e);
+                    warn!(
+                        "workspace {} failed to encode update for broadcast: {}",
+                        workspace_id, e
+                    );
                 }
             }
         });

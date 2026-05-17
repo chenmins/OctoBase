@@ -4,7 +4,7 @@ mod blobs;
 mod blocks;
 mod doc;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use axum::Router;
 #[cfg(feature = "api")]
@@ -44,6 +44,7 @@ pub struct Context {
     channel: BroadcastChannels,
     storage: JwstStorage,
     webhook: Arc<std::sync::RwLock<String>>,
+    plain_yjs_rebuilt: RwLock<HashSet<String>>,
 }
 
 impl Context {
@@ -71,6 +72,7 @@ impl Context {
             webhook: Arc::new(std::sync::RwLock::new(
                 dotenvy::var("HOOK_ENDPOINT").unwrap_or_default(),
             )),
+            plain_yjs_rebuilt: RwLock::new(HashSet::new()),
         }
     }
 
@@ -142,6 +144,82 @@ impl Context {
         S: AsRef<str>,
     {
         self.storage.export_workspace(workspace_id).await
+    }
+
+    pub async fn persist_workspace<S>(&self, workspace_id: S, workspace: &Workspace) -> bool
+    where
+        S: AsRef<str>,
+    {
+        let workspace_id = workspace_id.as_ref();
+        match workspace.sync_migration() {
+            Ok(update) => self.persist_workspace_update(workspace_id, update).await,
+            Err(e) => {
+                error!("persist_workspace: {} sync_migration failed: {:?}", workspace_id, e);
+                false
+            }
+        }
+    }
+
+    pub async fn persist_workspace_update<S>(&self, workspace_id: S, update: Vec<u8>) -> bool
+    where
+        S: AsRef<str>,
+    {
+        self.storage
+            .full_migrate(workspace_id.as_ref().to_string(), Some(update), true)
+            .await
+    }
+
+    pub async fn persist_plain_yjs_rebuild_once<S>(&self, workspace_id: S, update: Vec<u8>, reason: &str) -> bool
+    where
+        S: AsRef<str>,
+    {
+        let workspace_id = workspace_id.as_ref().to_string();
+        let mut rebuilt = self.plain_yjs_rebuilt.write().await;
+
+        if rebuilt.contains(&workspace_id) {
+            info!(
+                "plain_yjs_rebuild_once: workspace={} reason={} already rebuilt; skip duplicate migrate",
+                workspace_id, reason
+            );
+            return true;
+        }
+
+        let ok = self
+            .storage
+            .full_migrate(workspace_id.clone(), Some(update), true)
+            .await;
+
+        if ok {
+            rebuilt.insert(workspace_id.clone());
+            info!(
+                "plain_yjs_rebuild_once: workspace={} reason={} persisted rebuilt update",
+                workspace_id, reason
+            );
+        } else {
+            warn!(
+                "plain_yjs_rebuild_once: workspace={} reason={} failed to persist rebuilt update",
+                workspace_id, reason
+            );
+        }
+
+        ok
+    }
+
+    pub async fn mark_plain_yjs_rebuilt<S>(&self, workspace_id: S)
+    where
+        S: AsRef<str>,
+    {
+        self.plain_yjs_rebuilt
+            .write()
+            .await
+            .insert(workspace_id.as_ref().to_string());
+    }
+
+    pub async fn forget_plain_yjs_rebuild<S>(&self, workspace_id: S)
+    where
+        S: AsRef<str>,
+    {
+        self.plain_yjs_rebuilt.write().await.remove(workspace_id.as_ref());
     }
 
     pub async fn create_workspace<S>(&self, workspace_id: S) -> JwstStorageResult<Workspace>
