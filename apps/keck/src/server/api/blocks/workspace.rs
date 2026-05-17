@@ -65,6 +65,7 @@ pub async fn get_workspace(Extension(context): Extension<Arc<Context>>, Path(wor
 pub async fn init_workspace(
     Extension(context): Extension<Arc<Context>>,
     Path(workspace): Path<String>,
+    Query(query): Query<InitWorkspaceQuery>,
     body: BodyStream,
 ) -> Response {
     info!("init_workspace: {}", workspace);
@@ -80,15 +81,63 @@ pub async fn init_workspace(
         .collect::<Vec<u8>>()
         .await;
 
+    info!(
+        "init_workspace: {} received body size={} bytes, force={}",
+        workspace,
+        data.len(),
+        query.force
+    );
+
     if has_error {
         StatusCode::INTERNAL_SERVER_ERROR.into_response()
-    } else if let Err(e) = context.init_workspace(&workspace, data).await {
+    } else if let Err(e) = context.init_workspace(&workspace, data.clone()).await {
         if matches!(e, JwstStorageError::WorkspaceExists(_)) {
-            return StatusCode::NOT_MODIFIED.into_response();
+            if !query.force {
+                warn!(
+                    "init_workspace: {} already exists; returning 304 (use ?force=true to overwrite)",
+                    workspace
+                );
+                return StatusCode::NOT_MODIFIED.into_response();
+            }
+
+            warn!(
+                "init_workspace: {} exists and force=true; deleting and re-importing",
+                workspace
+            );
+            context.forget_plain_yjs_rebuild(&workspace).await;
+            if context.storage.docs().delete_workspace(&workspace).await.is_err() {
+                error!("init_workspace: {} force delete failed", workspace);
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+            if let Err(e) = context.init_workspace(&workspace, data).await {
+                warn!("failed to force init workspace: {}", e.to_string());
+                return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+            }
+        } else {
+            warn!("failed to init workspace: {}", e.to_string());
+            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
         }
-        warn!("failed to init workspace: {}", e.to_string());
-        StatusCode::INTERNAL_SERVER_ERROR.into_response()
+        // Diagnostic: log what the workspace actually looks like right after
+        // import. This is the canonical place to see whether the imported
+        // binary carried nested CRDT types that may not survive a round-trip
+        // through standard yjs clients.
+        log_workspace_shape(&context, &workspace, "post-force-init-before-normalize").await;
+        normalize_imported_workspace(&context, &workspace, "post-force-init").await;
+        log_workspace_shape(&context, &workspace, "post-force-init-after-normalize").await;
+        match context.export_workspace(workspace).await {
+            Ok(data) => data.into_response(),
+            Err(e) => {
+                if matches!(e, JwstStorageError::WorkspaceNotFound(_)) {
+                    return StatusCode::NOT_FOUND.into_response();
+                }
+                warn!("failed to init workspace: {}", e.to_string());
+                StatusCode::INTERNAL_SERVER_ERROR.into_response()
+            }
+        }
     } else {
+        log_workspace_shape(&context, &workspace, "post-init-before-normalize").await;
+        normalize_imported_workspace(&context, &workspace, "post-init").await;
+        log_workspace_shape(&context, &workspace, "post-init-after-normalize").await;
         match context.export_workspace(workspace).await {
             Ok(data) => data.into_response(),
             Err(e) => {
@@ -100,6 +149,105 @@ pub async fn init_workspace(
             }
         }
     }
+}
+
+async fn normalize_imported_workspace(context: &Context, workspace: &str, stage: &str) {
+    match context.get_workspace(workspace).await {
+        Ok(ws) => {
+            let normalized = normalize_workspace_for_yjs(&ws, stage);
+            if let Some((update, entries)) = rebuild_plain_root_maps_for_yjs_update(&ws, stage) {
+                if context.persist_workspace_update(workspace, update).await {
+                    context.mark_plain_yjs_rebuilt(workspace).await;
+                    info!(
+                        "normalize_imported_workspace[{}]: {} persisted rebuilt plain root maps ({} entries)",
+                        stage, workspace, entries
+                    );
+                } else {
+                    warn!(
+                        "normalize_imported_workspace[{}]: {} failed to persist rebuilt plain root maps ({} entries)",
+                        stage, workspace, entries
+                    );
+                }
+            } else if normalized == 0 {
+                info!(
+                    "normalize_imported_workspace[{}]: {} no nested CRDT entries or plain-map rebuild needed",
+                    stage, workspace
+                );
+            } else if context.persist_workspace(workspace, &ws).await {
+                info!(
+                    "normalize_imported_workspace[{}]: {} persisted {} normalized entries",
+                    stage, workspace, normalized
+                );
+            } else {
+                warn!(
+                    "normalize_imported_workspace[{}]: {} failed to persist {} normalized entries",
+                    stage, workspace, normalized
+                );
+            }
+        }
+        Err(e) => warn!(
+            "normalize_imported_workspace[{}]: {} could not be opened: {}",
+            stage, workspace, e
+        ),
+    }
+}
+
+/// Emit a structured log of the workspace's root keys and the variant of each
+/// root. This is the smallest amount of information needed to diagnose REST vs
+/// y-websocket inconsistencies caused by nested CRDT types in imported snapshots.
+async fn log_workspace_shape(context: &Context, workspace: &str, stage: &str) {
+    match context.get_workspace(workspace).await {
+        Ok(ws) => {
+            let keys = ws.doc_keys();
+            info!("workspace_shape[{}]: {} root_keys={:?}", stage, workspace, keys);
+            for k in &keys {
+                if let Ok(m) = ws.get_or_create_map(k) {
+                    let entries: Vec<(String, &'static str)> = m
+                        .entries()
+                        .map(|(ek, ev)| {
+                            let variant: &'static str = match ev {
+                                jwst_core::Value::Any(_) => "Any",
+                                jwst_core::Value::Array(_) => "Y.Array",
+                                jwst_core::Value::Map(_) => "Y.Map",
+                                jwst_core::Value::Text(_) => "Y.Text",
+                                _ => "Other",
+                            };
+                            (ek.to_string(), variant)
+                        })
+                        .collect();
+                    let nested = entries
+                        .iter()
+                        .filter(|(_, v)| matches!(*v, "Y.Map" | "Y.Array" | "Y.Text"))
+                        .count();
+                    info!(
+                        "workspace_shape[{}]: {} root={} len={} entries={:?}",
+                        stage,
+                        workspace,
+                        k,
+                        m.len(),
+                        entries
+                    );
+                    if nested > 0 {
+                        warn!(
+                            "workspace_shape[{}]: {} root={} contains {} nested CRDT child(ren); these will not be observable by standard yjs/y-websocket peers if the snapshot used a non-standard binary encoding",
+                            stage, workspace, k, nested
+                        );
+                    }
+                }
+            }
+        }
+        Err(e) => warn!(
+            "workspace_shape[{}]: {} could not be re-opened: {}",
+            stage, workspace, e
+        ),
+    }
+}
+
+#[derive(Deserialize, IntoParams, Default)]
+pub struct InitWorkspaceQuery {
+    /// Replace existing workspace when true.
+    #[serde(default)]
+    force: bool,
 }
 
 /// Export a `Workspace` by id
@@ -183,6 +331,7 @@ pub async fn set_workspace(Extension(context): Extension<Arc<Context>>, Path(wor
 )]
 pub async fn delete_workspace(Extension(context): Extension<Arc<Context>>, Path(workspace): Path<String>) -> Response {
     info!("delete_workspace: {}", workspace);
+    context.forget_plain_yjs_rebuild(&workspace).await;
     if context.storage.docs().delete_workspace(&workspace).await.is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     };

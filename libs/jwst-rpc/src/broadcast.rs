@@ -53,10 +53,47 @@ pub async fn subscribe(workspace: &Workspace, identifier: String, sender: Broadc
                 history.len()
             );
 
+            // Diagnostic: surface the action mix in this delta. If a write
+            // produces only `Add(Any)` / `Update(Any)` entries even when the
+            // REST view shows nested CRDT children, that is a strong signal
+            // that the standard yjs sync protocol will never carry those
+            // children over y-websocket.
+            if !history.is_empty() {
+                let mut by_action: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+                for h in history.iter() {
+                    *by_action.entry(h.action.to_string()).or_insert(0) += 1;
+                }
+                debug!("workspace {} delta histories by action: {:?}", workspace_id, by_action);
+                for h in history.iter().take(20) {
+                    debug!(
+                        "workspace {} delta history: action={} path={} field={:?} content={}",
+                        workspace_id,
+                        h.action.to_string(),
+                        h.parent.join("."),
+                        h.field_name.as_ref().map(|field| field.to_string()),
+                        h.content
+                    );
+                }
+                if history.len() > 20 {
+                    debug!(
+                        "workspace {} delta history: omitted {} additional entries",
+                        workspace_id,
+                        history.len() - 20
+                    );
+                }
+            }
+
             match encode_update_with_guid(update, workspace_id.clone())
                 .and_then(|update_with_guid| encode_update_as_message(update.to_vec()).map(|u| (update_with_guid, u)))
             {
                 Ok((broadcast_update, sendable_update)) => {
+                    trace!(
+                        "workspace {} broadcast: raw_with_guid={}B, sync_message={}B, subscribers={}",
+                        workspace_id,
+                        broadcast_update.len(),
+                        sendable_update.len(),
+                        sender.receiver_count()
+                    );
                     if sender
                         .send(BroadcastType::BroadcastRawContent(broadcast_update))
                         .is_err()
@@ -69,7 +106,10 @@ pub async fn subscribe(workspace: &Workspace, identifier: String, sender: Broadc
                     }
                 }
                 Err(e) => {
-                    debug!("failed to encode update: {}", e);
+                    warn!(
+                        "workspace {} failed to encode update for broadcast: {}",
+                        workspace_id, e
+                    );
                 }
             }
         });
