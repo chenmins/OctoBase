@@ -2,7 +2,7 @@ use std::io::Write;
 
 use jwst_codec::{CrdtWriter, JwstCodecError, JwstCodecResult, RawEncoder};
 
-pub use jwst_logger::{debug, error, info, warn};
+
 use jwst_core::{Any, Value, Workspace};
 pub use jwst_logger::{debug, error, info, trace, warn};
 pub use nanoid::nanoid;
