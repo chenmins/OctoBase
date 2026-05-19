@@ -11,7 +11,29 @@ impl_type!(Map);
 pub(crate) trait MapType: AsInner<Inner = YTypeRef> {
     fn _insert<V: Into<Value>>(&mut self, key: String, value: V) -> JwstCodecResult {
         if let Some((mut store, mut ty)) = self.as_inner().write() {
-            let left = ty.map.get(&SmolStr::new(&key)).cloned();
+            // Normally `ty.map[key]` points at the right-most (head) item of
+            // the parent_sub chain, which is exactly the item we want to use
+            // as `left` so that the new item is appended at the end of the
+            // chain (and therefore has `right == None` after integration,
+            // staying alive — see the integrate rule that auto-deletes
+            // map-typed items whose `right.is_some()`).
+            //
+            // However, after loading a binary snapshot that contained
+            // concurrent writes to the same map key, the cached pointer may
+            // refer to an item that has since been marked deleted (or that
+            // never was the actual right-most alive item on remote peers).
+            // If we used that pointer blindly the new item would carry an
+            // `origin_left_id` pointing at a deleted item; when the update is
+            // sent over y-websocket, remote peers may then place the new
+            // item in the middle of their parent_sub chain, where the
+            // auto-delete rule kicks in and the value silently disappears.
+            //
+            // To be robust we resolve the actual right-most *alive* item in
+            // the parent_sub chain and use it as `left` instead. Falling back
+            // to `None` when no alive item exists matches the semantics of an
+            // insert into an empty key.
+            let raw_left = ty.map.get(&SmolStr::new(&key)).cloned();
+            let left = resolve_visible_head(raw_left);
 
             let item = store.create_item(
                 value.into().into(),
@@ -152,6 +174,63 @@ impl<'a> Iterator for EntriesIterator<'a> {
 }
 
 impl MapType for Map {}
+
+/// Resolve the right-most *alive* item in a parent_sub chain, starting from
+/// the cached head pointer (`ty.map[key]`).
+///
+/// `ty.map[key]` is supposed to be the right-most item in the chain — and on
+/// a freshly-built doc that is always true — but after merging in a remote
+/// snapshot that contained concurrent writes to the same key, the cached
+/// pointer may refer to an item that has since been marked deleted (and that
+/// may even sit in the middle of the chain rather than at the tail).
+///
+/// In that situation we walk the chain to its actual right-most node and then
+/// walk back until we find an alive item, returning it. If the cached pointer
+/// is already alive we use it directly. If no alive item exists in the chain
+/// we return `None`, which mirrors the semantics of inserting into an empty
+/// key.
+fn resolve_visible_head(head: Option<Somr<Item>>) -> Option<Somr<Item>> {
+    let head = head?;
+
+    {
+        let live = head.get()?;
+        if !live.deleted() {
+            return Some(head);
+        }
+    }
+
+    // The cached head pointer is deleted. Walk to the true right-most node,
+    // then walk left looking for the first alive item.
+    let mut rightmost: Somr<Item> = head.clone();
+    loop {
+        let next = match rightmost.get() {
+            Some(item) => item.right.clone(),
+            None => break,
+        };
+        if next.get().is_some() {
+            rightmost = next;
+        } else {
+            break;
+        }
+    }
+
+    let mut cursor: Somr<Item> = rightmost;
+    loop {
+        match cursor.get() {
+            Some(item) => {
+                if !item.deleted() {
+                    return Some(cursor);
+                }
+                let left = item.left.clone();
+                if left.get().is_none() {
+                    return None;
+                }
+                cursor = left;
+            }
+            None => return None,
+        }
+    }
+}
 
 impl Map {
     #[inline(always)]
@@ -306,6 +385,53 @@ mod tests {
                     ("2", Value::Any(Any::String("value2".to_string())))
                 ]
             )
+        });
+    }
+
+    /// Regression test for the `Map::_insert` behaviour after the cached
+    /// `parent.map[key]` pointer has become a deleted item.
+    ///
+    /// Simulates the bug observed when loading a binary snapshot containing
+    /// concurrent writes to the same map key: the server's internal head
+    /// pointer ends up referring to an item that has since been marked
+    /// deleted. Without the fix, the subsequent `insert` would create a new
+    /// item whose `origin_left_id` points at the deleted item, which other
+    /// peers may then auto-delete during integration (the map-typed
+    /// `right.is_some()` rule). With the fix, `_insert` walks back to an
+    /// alive item (or falls back to `None`) before creating the struct.
+    #[test]
+    fn test_map_insert_after_cached_head_deleted() {
+        loom_model!({
+            let doc = Doc::new();
+            let mut map = doc.get_or_create_map("map").unwrap();
+
+            // Establish a live value at the key.
+            map.insert("k".to_string(), "v1").unwrap();
+            assert_eq!(map.get("k").unwrap(), Value::Any(Any::String("v1".to_string())));
+
+            // Set it twice more so the chain becomes non-trivial.
+            map.insert("k".to_string(), "v2").unwrap();
+            map.insert("k".to_string(), "v3").unwrap();
+            assert_eq!(map.get("k").unwrap(), Value::Any(Any::String("v3".to_string())));
+
+            // Remove the key: this marks the cached head item as deleted but
+            // leaves `parent.map["k"]` pointing at it.
+            map.remove("k");
+            assert!(!map.contains_key("k"));
+
+            // Insert again. Prior to the fix this would create a struct whose
+            // `left` is the deleted v3 item; after the fix we resolve to None
+            // (no alive item in the chain) and create a clean head.
+            map.insert("k".to_string(), "v4").unwrap();
+            assert_eq!(map.get("k").unwrap(), Value::Any(Any::String("v4".to_string())));
+
+            // Round-trip through the binary encoding to make sure the wire
+            // form is consistent (i.e., the new struct is not lost when
+            // another peer re-applies the update).
+            let binary = doc.encode_update_v1().unwrap();
+            let new_doc = Doc::try_from_binary_v1(binary).unwrap();
+            let map = new_doc.get_or_create_map("map").unwrap();
+            assert_eq!(map.get("k").unwrap(), Value::Any(Any::String("v4".to_string())));
         });
     }
 }
